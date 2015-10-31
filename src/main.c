@@ -21,7 +21,7 @@
 #include <avr/sleep.h>
 #include <util/delay.h>
 
-#include "USI_UART_config.h"
+#include "libs/USI_UART_config.h"
 
 int main( void )
 {

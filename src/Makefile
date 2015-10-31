@@ -60,7 +60,7 @@ TARGET = main
 
 
 # List C source files here. (C dependencies are automatically generated.)
-SRC = USI_UART.c $(TARGET).c
+SRC = libs/USI_UART.c $(TARGET).c
 
 
 # List Assembler source files here.
