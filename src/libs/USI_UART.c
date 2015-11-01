@@ -116,7 +116,7 @@ void USI_UART_Initialise_Transmitter( void )
     TCCR0A = (1<<WGM01) | (1<<COM0A0);              // CTC mode
     OCR0A = 104;
     TIFR  = 0;                                       // Clear Timer0 OVF interrupt flag.
-    TIMSK = (1<<OCF0A);
+    TIMSK |= (1<<OCF0A);
 
     PORTB |= (1<<PB1);
     DDRB  |= (1<<PB1);                                        // Configure USI_DO as output.
@@ -282,8 +282,8 @@ ISR(PCINT0_vect)
         TCNT0  = 0;
         TCCR0A = (1<<WGM01) | (1<<COM0A0);              // CTC mode
         OCR0A = 52;
-        TIFR  = (1<<OCIE0A);                                       // Clear Timer0 OVF interrupt flag.
-        TIMSK = (1<<OCF0A);
+        TIFR  |= (1<<OCIE0A);                                       // Clear Timer0 OVF interrupt flag.
+        TIMSK |= (1<<OCF0A);
         TCCR0B = (0<<CS02)|(1<<CS01)|(0<<CS00);         // Reset the prescaler and start Timer0.
         PCMSK &= ~(1<<PCINT0);
         GIMSK &= ~(1<<PCIE);                                    // Disable pin change interrupt for PB3:0. 

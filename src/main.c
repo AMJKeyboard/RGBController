@@ -16,9 +16,13 @@
 *
 ****************************************************************************/
 
+
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
+
+#include <stdlib.h>
 #include <util/delay.h>
 
 #include "libs/USI_UART_config.h"
@@ -28,8 +32,15 @@
 #define PIN_POWER 3 // PB3
 #define PORT_BANK B // PORTB
 #define PORT_LED PB4
-#define RGB_COUNT 6
+#define RGB_COUNT 21
 
+ws2812 cont;
+
+
+volatile int overflow_count;
+
+void commander( void );
+void InitTimer1( void );
 
 wserr_t init_led(
     __inout wscol_t *ele,
@@ -42,11 +53,34 @@ wserr_t init_led(
         result = WS_ERR_INV_ARG;
         goto exit;
     }
-    uint16_t temp = ele_idx % 3;
-    ele->red = (temp == 0) ? 3:0;
-    ele->green = (temp == 1) ? 3:0;
-    ele->blue = (temp == 2) ? 3:0;
+    ele->red = 0;
+    ele->green = 0;
+    ele->blue = 0;
 
+exit:
+    return result;
+}
+
+
+wserr_t
+update_off_led(
+    __inout wscol_t *ele,
+    __in uint16_t ele_idx,
+    __in uint16_t iter
+    )
+{
+    wserr_t result = WS_ERR_NONE;
+
+    if(!ele || (ele_idx >= WS_ELE_MAX_COUNT)) {
+        result = WS_ERR_INV_ARG;
+        goto exit;
+    }
+    if ( iter == 0){
+        goto exit;
+    }
+    ele->red = 0;
+    ele->green = 0;
+    ele->blue = 0;
 exit:
     return result;
 }
@@ -67,21 +101,43 @@ update_led(
     if ( iter == 0){
         goto exit;
     }
-    uint16_t temp = ele_idx % 3;
-    ele->red = (temp == 0) ? 3:0;
-    ele->green = (temp == 1) ? 3:0;
-    ele->blue = (temp == 2) ? 3:0;
+    ele->red = 1;
+    ele->green = 1;
+    ele->blue = 1;
 exit:
     return result;
 }
 
 
-int main( void )
+wserr_t
+rand_update_led(
+    __inout wscol_t *ele,
+    __in uint16_t ele_idx,
+    __in uint16_t iter
+    )
 {
-    unsigned char myString[] = "uuuuuu";
-    ws2812 cont;
     wserr_t result = WS_ERR_NONE;
-    unsigned char counter;
+
+    if(!ele || (ele_idx >= WS_ELE_MAX_COUNT)) {
+        result = WS_ERR_INV_ARG;
+        goto exit;
+    }
+    if ( iter == 0){
+        goto exit;
+    }
+    uint16_t seed = rand() % 3;
+    uint16_t temp = (ele_idx + seed) % 3;
+    ele->red = (temp == 0) ? 6:0;
+    ele->green = (temp == 1) ? 6:0;
+    ele->blue = (temp == 2) ? 6:0;
+exit:
+    return result;
+}
+
+
+int main( void ) {
+
+    wserr_t result = WS_ERR_NONE;
     USI_UART_Flush_Buffers();
 
     // initialization RGB
@@ -89,27 +145,71 @@ int main( void )
     if(!WS_ERR_SUCCESS(result)) {
         goto exit;
     }
+
+    InitTimer1();
     USI_UART_Initialise_Receiver();                                         // Initialisation for USI_UART receiver
     sei();                                                   // Enable global interrupts
+    USI_UART_Transmit_Byte('B');
+    _delay_us(10);
     for( ; ; )                                                              // Run forever
     {
         if( USI_UART_Data_In_Receive_Buffer() )
         {
-            for(counter = 0; counter < 2; counter++)                       // Echo myString[]
-            {
-                USI_UART_Transmit_Byte(myString[counter]);
-            }
-            USI_UART_Transmit_Byte( USI_UART_Receive_Byte() );              // Echo the received character      
-            result = ws2812_update(&cont, update_led);
+            commander();
         }
-        sleep_cpu();
+        _delay_us(20);
     }
 
 exit:
     for (;;) {
         _delay_ms(300);
-        USI_UART_Transmit_Byte('e');
+        USI_UART_Transmit_Byte('X');
         _delay_ms(300);
     }
     return 1;
+}
+
+void InitTimer1() {
+    overflow_count = 0;
+    GTCCR |= _BV(PSR1);
+    TCNT1 = 0;
+    TCCR1 = 0;
+
+}
+
+ISR(TIM1_OVF_vect) {
+    if (overflow_count >= 3) {
+        ws2812_update(&cont, rand_update_led);
+        overflow_count = 0;
+    } else {
+        overflow_count ++;
+    }
+    TCNT1 = 0;
+}
+
+void commander() {
+    unsigned char cmd = USI_UART_Receive_Byte();
+    cli();
+    switch(cmd){
+        case '0':
+            ws2812_update(&cont, update_off_led);
+            break;
+        case '2':
+            ws2812_update(&cont, rand_update_led);
+            break;
+        case '3':
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
+        case '4':
+            TIMSK &= ~_BV(TOIE1);
+            TCCR1 = 0;
+            break;
+        default:
+            ws2812_update(&cont, update_led);
+            break;
+    }
+    sei();
+    USI_UART_Transmit_Byte(cmd);
+    _delay_us(10);
 }
