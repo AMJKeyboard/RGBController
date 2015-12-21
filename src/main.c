@@ -47,8 +47,8 @@ enum Rgb_Status {
 enum Cmd_Flag {
     FUNUSED=0,
     FINITLED,
-    FLEDMODE,
     FLEDCOLOR,
+    FLEDMODE,
     FLEDLIGHT,
     FFWINFO,
     FEXTCMD
@@ -117,22 +117,29 @@ static const uint8_t rainbow[21] PROGMEM = {
     0x80, 0,    0x80    // purple
 };
 
-static uint8_t reduce = 2;
-static uint8_t divisor = 1;
+static uint8_t reduce = 4;
 
-static uint8_t spec_value = 2;
+const uint8_t DIVISOR_MAX = 10;
+
+static uint8_t divisor = 1;
+static uint8_t spec_value = 1;
 
 static uint8_t messageBuf[MESSAGEBUF_SIZE];
 
 uint16_t RGB_TEMP = 0;
 uint8_t RGB_MAXIMUM = 0;
-uint8_t RGB_DIRECTION = 0;
 
 uint8_t OVERFLOW_MAX = 3;
-volatile int overflow_count;
+volatile int overflow_count = 0;
+uint8_t MODE_VALUE_CHNAGE_MAX = UINT8_MAX;
+uint8_t MODE_VALUE_DIRECTION = 0; // 0:down 1:up
+volatile int mode_value_change_count = 0;
+
+uint8_t TCNT1_INIT_VALUE = 0;
 
 
-wserr_t (*UPDATE_EFFECT_FUN)(__inout wscol_t *ele, __in uint16_t ele_idx, __in uint16_t iter);
+wserr_t (*UPDATE_RGB_EFFECT_FUN)(__inout wscol_t *ele, __in uint16_t ele_idx, __in uint16_t iter);
+void (*UPDATE_MODE_VALUE_CHANGE_FUN)(void);
 
 void Commander( void );
 void InitTimer1( void );
@@ -141,6 +148,8 @@ uint8_t ExtCommand(uint8_t ext);
 uint8_t SelectColor(uint8_t color);
 uint8_t SelectMode(uint8_t mode);
 void SetSingleColor(uint8_t color);
+void mode_value_change_null(void);
+void mode_value_change_bea(void);
 
 // }}}
 
@@ -297,11 +306,16 @@ int main( void ) {
     }
     rgb_status = SINITED;
     color_spec = CSWHITE;
+    UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_null;
 
     InitTimer1();
     USI_UART_Initialise_Receiver();                                         // Initialisation for USI_UART receiver
     sei();                                                   // Enable global interrupts
-    USI_UART_Transmit_Byte('B');
+
+    USI_UART_Transmit_Byte(0x00);
+    USI_UART_Transmit_Byte(0x01);
+    USI_UART_Transmit_Byte(0x02);
+
     _delay_us(10);
     for( ; ; )                                                              // Run forever
     {
@@ -335,12 +349,18 @@ void InitTimer1() {
 
 ISR(TIM1_OVF_vect) {
     if (overflow_count >= OVERFLOW_MAX) {
-        ws2812_update(&cont, *UPDATE_EFFECT_FUN);
+        ws2812_update(&cont, *UPDATE_RGB_EFFECT_FUN);
         overflow_count = 0;
     } else {
         overflow_count ++;
     }
-    TCNT1 = 0;
+    if (mode_value_change_count >= MODE_VALUE_CHNAGE_MAX){
+        (*UPDATE_MODE_VALUE_CHANGE_FUN)();
+        mode_value_change_count = 0;
+    } else {
+        mode_value_change_count ++;
+    }
+    TCNT1 = TCNT1_INIT_VALUE;
 }
 // }}}
 
@@ -429,6 +449,26 @@ void SetSingleColor(uint8_t color) {
 
 // {{{ select mode
 
+
+void mode_value_change_null(void) {
+    // null function
+}
+
+void mode_value_change_bea(void) {
+    if (MODE_VALUE_DIRECTION) {
+        divisor++;
+    }
+    else {
+        divisor--;
+    }
+    if (divisor <= 1 ) {
+        MODE_VALUE_DIRECTION = 1;
+    }
+    else if (divisor >= DIVISOR_MAX) {
+        MODE_VALUE_DIRECTION = 0;
+    }
+}
+
 uint8_t SelectMode(uint8_t mode){
     uint8_t ret = 0;
 
@@ -441,46 +481,84 @@ uint8_t SelectMode(uint8_t mode){
     // diable old mode
     TIMSK &= ~_BV(TOIE1);
     TCCR1 = 0;
+    TCNT1_INIT_VALUE = 0;
     spec_value = 2;
+
     switch (mode) {
         case MBRIG1:
             divisor = 5;
-            UPDATE_EFFECT_FUN = spec_update_led;
-            ws2812_update(&cont, *UPDATE_EFFECT_FUN);
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            ws2812_update(&cont, *UPDATE_RGB_EFFECT_FUN);
             break;
         case MBRIG2:
             divisor = 2;
-            UPDATE_EFFECT_FUN = spec_update_led;
-            ws2812_update(&cont, *UPDATE_EFFECT_FUN);
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            ws2812_update(&cont, *UPDATE_RGB_EFFECT_FUN);
             break;
         case MBRIG3:
             divisor = 1;
-            UPDATE_EFFECT_FUN = spec_update_led;
-            ws2812_update(&cont, *UPDATE_EFFECT_FUN);
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            ws2812_update(&cont, *UPDATE_RGB_EFFECT_FUN);
             break;
 
         case MBREA1:
+            OVERFLOW_MAX = 0;
+            MODE_VALUE_CHNAGE_MAX = 0;
+            TCNT1_INIT_VALUE = 200;
+
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_bea;
+
+            divisor = DIVISOR_MAX;
+            MODE_VALUE_DIRECTION = 0;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
         case MBREA2:
+            OVERFLOW_MAX = 0;
+            MODE_VALUE_CHNAGE_MAX = 0;
+            TCNT1_INIT_VALUE = 100;
+
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_bea;
+
+            divisor = DIVISOR_MAX;
+            MODE_VALUE_DIRECTION = 0;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
         case MBREA3:
-            break;
+            OVERFLOW_MAX = 0;
+            MODE_VALUE_CHNAGE_MAX = 0;
+            TCNT1_INIT_VALUE = 0;
 
+            UPDATE_RGB_EFFECT_FUN = spec_update_led;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_bea;
+
+            divisor = DIVISOR_MAX;
+            MODE_VALUE_DIRECTION = 0;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
         case MRAND1:
-            OVERFLOW_MAX = 1;
-            UPDATE_EFFECT_FUN = rand_update_led;
+            OVERFLOW_MAX = 0;
+            TCNT1_INIT_VALUE = 100;
+            UPDATE_RGB_EFFECT_FUN = rand_update_led;
             TIMSK |= _BV(TOIE1);
             TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
         case MRAND2:
-            OVERFLOW_MAX = 3;
-            UPDATE_EFFECT_FUN = rand_update_led;
+            OVERFLOW_MAX = 1;
+            UPDATE_RGB_EFFECT_FUN = rand_update_led;
             TIMSK |= _BV(TOIE1);
             TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
         case MRAND3:
-            OVERFLOW_MAX = 6;
-            UPDATE_EFFECT_FUN = rand_update_led;
+            OVERFLOW_MAX = 3;
+            UPDATE_RGB_EFFECT_FUN = rand_update_led;
             TIMSK |= _BV(TOIE1);
             TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
@@ -507,23 +585,21 @@ void Commander() {
     uint8_t rev = USI_UART_Receive_Byte();
     cmd = rev & 0b111;
     data = rev >> 4; // FIXME 5bit !
+    USI_UART_Transmit_Byte(cmd);
     switch(cmd){
         case FINITLED:
             // Not Implemented
             break;
         case FLEDCOLOR:
-            USI_UART_Transmit_Byte(0x0A);
             ret = SelectColor(data);
             break;
         case FLEDMODE:
-            USI_UART_Transmit_Byte(0x0B);
             if (rgb_status == SPOWERON){
                 ret = SelectMode(data);
             }
             break;
         case FLEDLIGHT:
-            USI_UART_Transmit_Byte(0x0C);
-            if (data > 0 && data < 5){
+            if (data > 0 && data <= 0xF){
                 reduce = data;
                 ret = 1;
             }
@@ -532,14 +608,14 @@ void Commander() {
             // Not Implemented
             break;
         case FEXTCMD:
-            USI_UART_Transmit_Byte(0x0D);
             ret = ExtCommand(data);
             break;
     }
     if (ret) {
+        _delay_us(2);
         USI_UART_Transmit_Byte(0xFF);
     }
-    _delay_us(10);
+    _delay_us(6);
 }
 
 
@@ -550,21 +626,21 @@ uint8_t ExtCommand(uint8_t ext) {
     }
     ret = 0;
     switch (ext) {
+        case ELEDON:
+            if ( rgb_status == SINITED || rgb_status == SPOWEROFF ) {
+                ret = 1;
+                rgb_status = SPOWERON;
+                ws2812_on(&cont, update_led);
+            }
+            break;
         case ELEDOFF:
             if ( rgb_status == SPOWERON) {
-                ws2812_off(&cont);
+                ret = 1;
                 rgb_status = SPOWEROFF;
+                ws2812_off(&cont);
                 TIMSK &= ~_BV(TOIE1);
                 TCCR1 = 0;
                 spec_value = 2;
-                ret = 1;
-            }
-            break;
-        case ELEDON:
-            if ( rgb_status == SINITED || rgb_status == SPOWEROFF ) {
-                ws2812_on(&cont, update_led);
-                rgb_status = SPOWERON;
-                ret = 1;
             }
             break;
         case ELEDREFRESH:
