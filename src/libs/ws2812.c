@@ -25,7 +25,7 @@
 
 #define WS_MSB_MASK 0x80
 
-#define WS_DELAY_PWR_CHG 100.0 // us
+#define WS_DELAY_PWR_CHG 300.0 // us
 #define WS_DELAY_RESET 50.0 // us
 
 #define WS_BIT_CLR(_FLAG_, _BIT_) ((_FLAG_) &= ~(_BIT_))

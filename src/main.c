@@ -32,7 +32,7 @@
 #define PORT_BANK B // PORTB
 #define PORT_LED PB4
 #define RGB_COUNT 16
-#define MESSAGEBUF_SIZE 48
+#define COLORS_BIT_SIZE 48
 
 
 // {{{ var
@@ -59,6 +59,8 @@ enum Ext_Cmd {
     ELEDON,
     ELEDOFF,
     ELEDREFRESH,
+    ETIMER_START,
+    ETIMER_STOP,
     EINTHIGHT,
     EINTLOW,
     ELAST
@@ -72,12 +74,15 @@ enum Mode_List {
     MBREA1,
     MBREA2,
     MBREA3,
-    MRAND1,
-    MRAND2,
-    MRAND3,
+    MRUN1,
+    MRUN2,
+    MRUN3,
     MTURN1,
     MTURN2,
     MTURN3,
+    MRAND1,
+    MRAND2,
+    MRAND3,
     MLAST
 } mode_spec;
 
@@ -121,19 +126,19 @@ static uint8_t reduce = 4;
 
 const uint8_t DIVISOR_MAX = 10;
 
-static uint8_t divisor = 1;
-static uint8_t spec_value = 1;
+static uint8_t divisor = 5;
+static uint8_t spec_value = 5;
 
-static uint8_t messageBuf[MESSAGEBUF_SIZE];
+static uint8_t colors_buf[COLORS_BIT_SIZE];
 
-uint16_t RGB_TEMP = 0;
-uint8_t RGB_MAXIMUM = 0;
+uint16_t color_sort_start = 0;
 
 uint8_t OVERFLOW_MAX = 3;
 volatile int overflow_count = 0;
 uint8_t MODE_VALUE_CHNAGE_MAX = UINT8_MAX;
 uint8_t MODE_VALUE_DIRECTION = 0; // 0:down 1:up
 volatile int mode_value_change_count = 0;
+volatile int cur_mode = MBRIG1;
 
 uint8_t TCNT1_INIT_VALUE = 0;
 
@@ -150,7 +155,8 @@ uint8_t SelectMode(uint8_t mode);
 void SetSingleColor(uint8_t color);
 void mode_value_change_null(void);
 void mode_value_change_bea(void);
-
+void colors_buf_fill(void);
+void colors_buf_fill_spec(void);
 // }}}
 
 
@@ -177,29 +183,6 @@ exit:
 
 
 wserr_t
-update_led(
-    __inout wscol_t *ele,
-    __in uint16_t ele_idx,
-    __in uint16_t iter
-    )
-{
-    wserr_t result = WS_ERR_NONE;
-
-    if(!ele || (ele_idx >= WS_ELE_MAX_COUNT)) {
-        result = WS_ERR_INV_ARG;
-        goto exit;
-    }
-    if ( iter == 0){
-        goto exit;
-    }
-    ele->red = spec_value;
-    ele->green = spec_value;
-    ele->blue = spec_value;
-exit:
-    return result;
-}
-
-wserr_t
 spec_update_led(
     __inout wscol_t *ele,
     __in uint16_t ele_idx,
@@ -207,11 +190,11 @@ spec_update_led(
     )
 {
     wserr_t result = WS_ERR_NONE;
-
     if(!ele || (ele_idx >= WS_ELE_MAX_COUNT)) {
         result = WS_ERR_INV_ARG;
         goto exit;
     }
+
     if ( iter == 0){
         goto exit;
     }
@@ -261,11 +244,11 @@ update_rgb_turnover(
         result = WS_ERR_INV_ARG;
         goto exit;
     }
-    data_idx = (ele_idx + (RGB_TEMP % RGB_COUNT)) % RGB_COUNT;
-    temp = ((data_idx+1)*3);
-    ele->red = messageBuf[temp+1];
-    ele->green = messageBuf[temp+2];
-    ele->blue = messageBuf[temp+3];
+    data_idx = (ele_idx + (color_sort_start % RGB_COUNT)) % RGB_COUNT;
+    temp = data_idx * 3;
+    ele->red = colors_buf[temp] / reduce;
+    ele->green = colors_buf[temp+1] / reduce;
+    ele->blue = colors_buf[temp+2] / reduce;
 exit:
     return result;
 }
@@ -292,12 +275,17 @@ exit:
 
 // {{{ main
 int main( void ) {
+
+    CLKPR = _BV(CLKPCE);
+    CLKPR = 0;
+
+    DDRB |= _BV(PORT_LED);
+    PORTB &= ~_BV(PORT_LED);
+
     rgb_status = SUNINIT;
     wserr_t result = WS_ERR_NONE;
     USI_UART_Flush_Buffers();
 
-    DDRB |= _BV(PORT_LED);
-    PORTB |= _BV(PORT_LED);
 
     // initialization RGB
     result = ws2812_init(&cont, PORT_BANK, PIN_POWER, PIN_DATA, RGB_COUNT, init_led, 0, NULL);
@@ -305,18 +293,21 @@ int main( void ) {
         goto exit;
     }
     rgb_status = SINITED;
-    color_spec = CSWHITE;
+
+    divisor = 5;
     UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_null;
+
+    color_spec = CSWHITE;
+    SetSingleColor(color_spec);
 
     InitTimer1();
     USI_UART_Initialise_Receiver();                                         // Initialisation for USI_UART receiver
     sei();                                                   // Enable global interrupts
 
-    USI_UART_Transmit_Byte(0x00);
-    USI_UART_Transmit_Byte(0x01);
-    USI_UART_Transmit_Byte(0x02);
+    USI_UART_Transmit_Byte(0xAA);
+    PORTB |= _BV(PORT_LED);
 
-    _delay_us(10);
+    _delay_us(5);
     for( ; ; )                                                              // Run forever
     {
         if( USI_UART_Data_In_Receive_Buffer() )
@@ -379,6 +370,7 @@ uint8_t SelectColor(uint8_t color){
         return ret;
 
     }
+    // Not Implemented
     switch(color) {
         case CSRANDOM:
             break;
@@ -449,9 +441,15 @@ void SetSingleColor(uint8_t color) {
 
 // {{{ select mode
 
-
 void mode_value_change_null(void) {
     // null function
+}
+
+void mode_value_change_turn(void) {
+    color_sort_start ++;
+    if (color_sort_start == 32 ){
+        color_sort_start = 0;
+    }
 }
 
 void mode_value_change_bea(void) {
@@ -482,7 +480,7 @@ uint8_t SelectMode(uint8_t mode){
     TIMSK &= ~_BV(TOIE1);
     TCCR1 = 0;
     TCNT1_INIT_VALUE = 0;
-    spec_value = 2;
+    mode_spec = mode;
 
     switch (mode) {
         case MBRIG1:
@@ -543,6 +541,80 @@ uint8_t SelectMode(uint8_t mode){
             TIMSK |= _BV(TOIE1);
             TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
+        case MRUN1:
+            colors_buf_fill_spec();
+
+            OVERFLOW_MAX = 0;
+            MODE_VALUE_CHNAGE_MAX = 1;
+            TCNT1_INIT_VALUE = 192;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
+        case MRUN2:
+            colors_buf_fill_spec();
+
+            OVERFLOW_MAX = 0;
+            MODE_VALUE_CHNAGE_MAX = 1;
+            TCNT1_INIT_VALUE = 128;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
+        case MRUN3:
+            colors_buf_fill_spec();
+
+            OVERFLOW_MAX = 1;
+            MODE_VALUE_CHNAGE_MAX = 1;
+            TCNT1_INIT_VALUE = 0;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
+
+        case MTURN1:
+            colors_buf_fill();
+            OVERFLOW_MAX = 1;
+            MODE_VALUE_CHNAGE_MAX = 1;
+            TCNT1_INIT_VALUE = 0;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+
+            break;
+        case MTURN2:
+            colors_buf_fill();
+            OVERFLOW_MAX = 2;
+            MODE_VALUE_CHNAGE_MAX = 2;
+            TCNT1_INIT_VALUE = 0;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
+        case MTURN3:
+            colors_buf_fill();
+            OVERFLOW_MAX = 4;
+            MODE_VALUE_CHNAGE_MAX = 4;
+            TCNT1_INIT_VALUE = 0;
+
+            UPDATE_RGB_EFFECT_FUN = update_rgb_turnover;
+            UPDATE_MODE_VALUE_CHANGE_FUN = mode_value_change_turn;
+
+            TIMSK |= _BV(TOIE1);
+            TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
+            break;
         case MRAND1:
             OVERFLOW_MAX = 0;
             TCNT1_INIT_VALUE = 100;
@@ -562,13 +634,6 @@ uint8_t SelectMode(uint8_t mode){
             TIMSK |= _BV(TOIE1);
             TCCR1 |= (_BV(CS11) | _BV(CS12) | _BV(CS13));
             break;
-
-        case MTURN1:
-            break;
-        case MTURN2:
-            break;
-        case MTURN3:
-            break;
         default:
             ret = 0;
     }
@@ -576,6 +641,31 @@ uint8_t SelectMode(uint8_t mode){
     return ret;
 
 }
+
+void colors_buf_fill(void){
+    uint8_t max_src_len = sizeof(rainbow);
+    uint8_t colors_bit_size = sizeof(colors_buf);
+    uint8_t src_addr = 0;
+    for (int i=0; i < colors_bit_size; i++) {
+        src_addr = i % max_src_len;
+        colors_buf[i] = pgm_read_byte(&rainbow[src_addr]);
+    }
+}
+
+void colors_buf_fill_spec(void){
+    uint8_t colors_bit_size = sizeof(colors_buf);
+    for (int i=0; i < colors_bit_size; i++) {
+        colors_buf[i] = 0;
+    }
+    colors_buf[0] = rgb_color.red;
+    colors_buf[1] = rgb_color.green;
+    colors_buf[2] = rgb_color.blue;
+
+    colors_buf[24] = rgb_color.red;
+    colors_buf[25] = rgb_color.green;
+    colors_buf[26] = rgb_color.blue;
+}
+
 // }}}
 
 
@@ -584,14 +674,18 @@ void Commander() {
     uint8_t cmd, data, ret = 0;
     uint8_t rev = USI_UART_Receive_Byte();
     cmd = rev & 0b111;
-    data = rev >> 4; // FIXME 5bit !
     USI_UART_Transmit_Byte(cmd);
+    data = rev >> 4; // FIXME 5bit !
     switch(cmd){
         case FINITLED:
             // Not Implemented
             break;
         case FLEDCOLOR:
             ret = SelectColor(data);
+            if (cur_mode < MRUN1){
+                UPDATE_RGB_EFFECT_FUN = spec_update_led;
+                ws2812_update(&cont, *UPDATE_RGB_EFFECT_FUN);
+            }
             break;
         case FLEDMODE:
             if (rgb_status == SPOWERON){
@@ -613,9 +707,8 @@ void Commander() {
     }
     if (ret) {
         _delay_us(2);
-        USI_UART_Transmit_Byte(0xFF);
+       //USI_UART_Transmit_Byte(0xFF);
     }
-    _delay_us(6);
 }
 
 
@@ -630,7 +723,7 @@ uint8_t ExtCommand(uint8_t ext) {
             if ( rgb_status == SINITED || rgb_status == SPOWEROFF ) {
                 ret = 1;
                 rgb_status = SPOWERON;
-                ws2812_on(&cont, update_led);
+                ws2812_on(&cont, spec_update_led);
             }
             break;
         case ELEDOFF:
@@ -640,19 +733,27 @@ uint8_t ExtCommand(uint8_t ext) {
                 ws2812_off(&cont);
                 TIMSK &= ~_BV(TOIE1);
                 TCCR1 = 0;
-                spec_value = 2;
             }
             break;
         case ELEDREFRESH:
             if ( rgb_status == SPOWERON) {
-                ws2812_update(&cont, update_led);
+                ws2812_update(&cont, spec_update_led);
                 ret = 1;
             }
             break;
+        case ETIMER_START:
+            TIMSK |= _BV(TOIE1);
+            break;
+
+        case ETIMER_STOP:
+            TIMSK &= ~_BV(TOIE1);
+            break;
+
         case EINTHIGHT:
             PORTB |= _BV(PORT_LED);
             ret = 1;
             break;
+
         case EINTLOW:
             PORTB &= ~_BV(PORT_LED);
             ret = 1;

@@ -340,7 +340,7 @@ end:
 
 
 # Display size of file.
-HEXSIZE = $(SIZE) --target=$(FORMAT) $(TARGET).hex
+HEXSIZE = $(SIZE) -t --target=$(FORMAT) $(TARGET).hex
 ELFSIZE = $(SIZE) $(TARGET).elf
 
 sizebefore:
